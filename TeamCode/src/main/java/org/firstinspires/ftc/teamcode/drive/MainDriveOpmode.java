@@ -16,7 +16,6 @@ import org.firstinspires.ftc.teamcode.input.GamepadEventHandler;
 import org.firstinspires.ftc.teamcode.pedro.Constants;
 import org.firstinspires.ftc.teamcode.telemetry.CustomTelemetry;
 
-import java.util.Arrays;
 
 
 @TeleOp(name = "Drive", group = "!advanced")
@@ -43,8 +42,6 @@ public class MainDriveOpmode extends OpMode {
     CustomMotorController intakeMotor, launcherMotor;
     CustomServoController blockerServo;
     boolean launcherState = false;
-    // Gains the launcher PID was last built from, so dashboard edits are picked up without rebuilding every loop
-    private double[] appliedLauncherPID;
 
 
     @Override
@@ -68,10 +65,11 @@ public class MainDriveOpmode extends OpMode {
                 intakeBlockerState == IntakeBlockerStateList.UP ? IntakeBlockerStateList.DOWN : IntakeBlockerStateList.UP);
         gp2handler.onPress("launcherToggle", gp -> gp.y, () -> launcherState = !launcherState);
 
+
         intakeMotor = new CustomMotorController(
                 hardwareMap,
                 new String[]{"intake"},
-                new boolean[]{false},
+                new boolean[]{true},
                 false,
                 28.0,
                 Controller.pid(0,0,0)
@@ -88,10 +86,10 @@ public class MainDriveOpmode extends OpMode {
         launcherMotor = new CustomMotorController(
                 hardwareMap,
                 new String[]{"launcher"},
-                new boolean[]{true},
+                new boolean[]{false},
                 true,
                 28.0,
-                Controller.pid(0, 0,0)
+                launcherController()
         );
 
         telemetryC.addLine("Initialized");
@@ -116,21 +114,18 @@ public class MainDriveOpmode extends OpMode {
         driveThread.setDriveInput(-gamepad1.left_stick_y, -gamepad1.left_stick_x, -gamepad1.right_stick_x);
 
         CheckLoop();
-
         Pose pose = driveThread.getPose();
-        telemetryC.addData("X", pose.x());
-        telemetryC.addData("Y", pose.y());
-        telemetryC.addData("Heading (deg)", Math.toDegrees(pose.heading()));
-        telemetryC.addData("Drive Loop (ms)", driveThread.getLoopTimeMs());
-        telemetryC.addData("Intake", intakeState);
-        telemetryC.addData("Blocker", intakeBlockerState);
+        telemetryC.addLine("X: " + pose.x());
+        telemetryC.addLine("Y: " + pose.y());
+        telemetryC.addLine("Heading: " + Math.toDegrees(pose.heading()));
         telemetryC.addData("Launcher", launcherState ? "ON" : "OFF");
         telemetryC.addData("Launcher Target RPM", launcherMotor.getTargetRPM());
-        telemetryC.addData("Launcher Motor RPM", launcherMotor.getRPM());
+        telemetryC.addData("Launcher RPM", launcherMotor.getRPM());
+        telemetryC.addData("Launcher Power", launcherMotor.getPIDOutput());
         telemetryC.addData("Launcher Ready", launcherMotor.atTargetRPM());
-        telemetryC.addData("Launcher Encoder", launcherMotor.getDebugString());
-        telemetryC.addData("LauncherState", launcherState);
-        telemetryC.addData("BlockerState", intakeBlockerState);
+        telemetryC.addData("blocker", intakeBlockerState);
+        telemetryC.addData("intake", intakeState);
+
         telemetryC.update();
     }
 
@@ -165,8 +160,7 @@ public class MainDriveOpmode extends OpMode {
                 break;
         }
         if (launcherState) {
-            UpdateLauncherPID();
-            launcherMotor.setRPM(MDOConstants.LauncherMotorRPM);
+            launcherMotor.setRPM(MDOConstants.LauncherRPM);
             launcherMotor.updateRPMPID();
         } else {
             // setPower leaves RPM mode, so the PID stops driving the motor
@@ -175,16 +169,17 @@ public class MainDriveOpmode extends OpMode {
     }
 
     /**
-     * Rebuild the launcher PID only when it isn't a PID yet or the dashboard gains changed, so the
-     * controller's integral/derivative state carries over between loops.
+     * Flywheel velocity controller: feedforward on the target RPM does most of the work, P corrects
+     * load changes, and a clamped I removes the last bit of steady-state error. No D, since it would
+     * just amplify encoder velocity noise. Gains are suppliers, so dashboard edits apply live.
      */
-    public void UpdateLauncherPID() {
-        double[] pid = MDOConstants.LauncherPID;
-        if (launcherMotor.getControllerType() == CustomMotorController.ControllerType.PID
-                && Arrays.equals(pid, appliedLauncherPID)) {
-            return;
-        }
-        appliedLauncherPID = pid.clone();
-        launcherMotor.setController(Controller.pid(pid[0], pid[1], pid[2]));
+    private static Controller launcherController() {
+        return Controller.proportionalFeedforward(() -> MDOConstants.LauncherKF)
+                .plus(Controller.proportional(() -> MDOConstants.LauncherKP))
+                .plus(Controller.integral(
+                        () -> MDOConstants.LauncherKI,
+                        () -> MDOConstants.LauncherIZone,
+                        () -> 1.0,
+                        () -> MDOConstants.LauncherMaxI));
     }
 }
